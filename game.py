@@ -3,6 +3,8 @@ from typing import Tuple
 
 import torch
 import torch._dynamo
+import websockets.extensions
+import websockets.extensions.permessage_deflate
 torch._dynamo.config.suppress_errors = True
 
 from dit import DiT_models
@@ -11,8 +13,17 @@ from torchvision.io import read_video
 from utils import sigmoid_beta_schedule
 from einops import rearrange
 from torch import autocast
-import pygame
+from safetensors.torch import load_file
+
+from aiohttp import web
+import threading
 import numpy as np
+import json
+import asyncio
+import ffmpeg
+import os
+import frontend
+import websockets
 
 assert torch.cuda.is_available()
 device = "cuda:0"
@@ -80,38 +91,45 @@ def clamp_mouse_input(mouse_input: Tuple[int, int]) -> Tuple[float, float]:
 
     return (clamped_x, clamped_y)
 
+latest_grabbed_inputs = []
 
-# Helper functions to capture live actions
+class dotdict(dict):
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+keymap = dotdict({k: k for k in ["K_e","K_ESCAPE","K_1","K_2","K_3","K_4","K_5","K_6","K_7","K_8","K_9","K_w","K_a","K_s","K_d","K_SPACE","K_LSHIFT","K_RSHIFT","K_LCTRL","K_RCTRL","K_q"]})
+
 def get_current_action(mouse_rel):
     action = {}
-    keys = pygame.key.get_pressed()
-    mouse_buttons = pygame.mouse.get_pressed()
+    inputs = latest_grabbed_inputs.pop(0)
+    keys = inputs.keys
+    mouse_buttons = inputs.mbuttons
     clamped_input = clamp_mouse_input(mouse_rel)
     # Map keys to actions
-    action["inventory"] = 1 if keys[pygame.K_e] else 0
-    action["ESC"] = 1 if keys[pygame.K_ESCAPE] else 0
-    action["hotbar.1"] = 1 if keys[pygame.K_1] else 0
-    action["hotbar.2"] = 1 if keys[pygame.K_2] else 0
-    action["hotbar.3"] = 1 if keys[pygame.K_3] else 0
-    action["hotbar.4"] = 1 if keys[pygame.K_4] else 0
-    action["hotbar.5"] = 1 if keys[pygame.K_5] else 0
-    action["hotbar.6"] = 1 if keys[pygame.K_6] else 0
-    action["hotbar.7"] = 1 if keys[pygame.K_7] else 0
-    action["hotbar.8"] = 1 if keys[pygame.K_8] else 0
-    action["hotbar.9"] = 1 if keys[pygame.K_9] else 0
-    action["forward"] = 2 if keys[pygame.K_w] else 0
-    action["back"] = 2 if keys[pygame.K_s] else 0
-    action["left"] = 2 if keys[pygame.K_a] else 0
-    action["right"] = 2 if keys[pygame.K_d] else 0
+    action["inventory"] = 1 if keys[keymap.K_e] else 0
+    action["ESC"] = 1 if keys[keymap.K_ESCAPE] else 0
+    action["hotbar.1"] = 1 if keys[keymap.K_1] else 0
+    action["hotbar.2"] = 1 if keys[keymap.K_2] else 0
+    action["hotbar.3"] = 1 if keys[keymap.K_3] else 0
+    action["hotbar.4"] = 1 if keys[keymap.K_4] else 0
+    action["hotbar.5"] = 1 if keys[keymap.K_5] else 0
+    action["hotbar.6"] = 1 if keys[keymap.K_6] else 0
+    action["hotbar.7"] = 1 if keys[keymap.K_7] else 0
+    action["hotbar.8"] = 1 if keys[keymap.K_8] else 0
+    action["hotbar.9"] = 1 if keys[keymap.K_9] else 0
+    action["forward"] = 2 if keys[keymap.K_w] else 0
+    action["back"] = 2 if keys[keymap.K_s] else 0
+    action["left"] = 2 if keys[keymap.K_a] else 0
+    action["right"] = 2 if keys[keymap.K_d] else 0
     action["camera"] = (mouse_rel[1] / 4, mouse_rel[0] / 4)  # tuple (x, y)
-    action["jump"] = 1 if keys[pygame.K_SPACE] else 0
-    action["sneak"] = 1 if keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT] else 0
-    action["sprint"] = 1 if keys[pygame.K_LCTRL] or keys[pygame.K_RCTRL] else 0
+    action["jump"] = 1 if keys[keymap.K_SPACE] else 0
+    action["sneak"] = 1 if keys[keymap.K_LSHIFT] or keys[keymap.K_RSHIFT] else 0
+    action["sprint"] = 1 if keys[keymap.K_LCTRL] or keys[keymap.K_RCTRL] else 0
     action["swapHands"] = 0  # Map to a key if needed
     action["attack"] = 1 if mouse_buttons[0] else 0  # Left mouse button
     action["use"] = 1 if mouse_buttons[2] else 0     # Right mouse button
     action["pickItem"] = 0  # Map to a key if needed
-    action["drop"] = 1 if keys[pygame.K_q] else 0
+    action["drop"] = 1 if keys[keymap.K_q] else 0
     return action
 
 
@@ -138,26 +156,48 @@ def action_to_tensor(action):
     return actions_one_hot
 
 
-# Initialize pygame
-pygame.init()
-pygame.mouse.set_visible(True)
-pygame.event.set_grab(False)
+async def new_client(websocket, path):
+    print(f"New client connected: {websocket.remote_address}")
+    try:
+        async for message in websocket:
+            await message_received(websocket, message)
+    except websockets.exceptions.ConnectionClosed:
+        print(f"Client disconnected: {websocket.remote_address}")
 
-# Set up display
-screen_width = 1024  # Adjust as needed
-screen_height = 1024  # Adjust as needed
-screen = pygame.display.set_mode((screen_width, screen_height))
-pygame.display.set_caption("Generated Video")
+async def message_received(client, message):
+    global latest_grabbed_inputs
+    latest_grabbed_inputs.append(json.loads(message)["input"])
+
+start_server = websockets.serve(new_client, "127.0.0.1", 17890, extensions=[
+    websockets.extensions.permessage_deflate.ServerPerMessageDeflateFactory(
+        server_max_window_bits=13,
+        client_max_window_bits=13,
+        compress_settings={"memLevel": 7}
+    )
+])
+
+async def main_server():
+    async with start_server:
+        await asyncio.Future()
+def server():
+    asyncio.run(main_server())
+
+websocket_thread = threading.Thread(target=server)
+websocket_thread.daemon = True
+websocket_thread.start()
+frontend_thread = frontend.start()
 
 # Load DiT checkpoint
-ckpt = torch.load("oasis500m.pt")
 model = DiT_models["DiT-S/2"]()
-model.load_state_dict(ckpt, strict=False)
+model_ckpt = load_file("oasis500m.safetensors")
+model.load_state_dict(model_ckpt, strict=False)
 model = model.to(device).half().eval()
 
+print("loading vae")
+
 # Load VAE checkpoint
-vae_ckpt = torch.load("vit-l-20.pt")
 vae = VAE_models["vit-l-20-shallow-encoder"]()
+vae_ckpt = load_file("vit-l-20.safetensors")
 vae.load_state_dict(vae_ckpt)
 vae = vae.to(device).half().eval()
 
@@ -178,13 +218,9 @@ if enable_torch_compile_model:
 if enable_torch_compile_vae:
     vae = torch.compile(vae, mode='reduce-overhead')
 
-# Adjustable context window size
-context_window_size = 4  # Adjust this value as needed
+context_window_size = 4
 
-# Get input video (first frame as prompt)
-video_id = "snippy-chartreuse-mastiff-f79998db196d-20220401-224517.chunk_001"
-
-# mp4_path = '/home/mix/Playground/ComfyUI/output/game_00001.mp4'
+video_id = os.environ["STARTING_IMAGE_NAME"]
 
 mp4_path = f"sample_data/{video_id}.mp4"
 video = read_video(mp4_path, pts_unit="sec")[0].float() / 255
@@ -272,14 +308,6 @@ alphas = 1.0 - betas
 alphas_cumprod = torch.cumprod(alphas, dim=0)
 alphas_cumprod = rearrange(alphas_cumprod, "T -> T 1 1 1")
 
-# Initialize Pygame font for FPS and adjustment info
-pygame.font.init()
-font_size = 24
-font = pygame.font.SysFont('Arial', font_size)
-
-# Initialize clock
-clock = pygame.time.Clock()
-
 # Initialize variables for FPS measurement
 frame_times = []  # List to store timestamps of recent frames
 fps = 0.0
@@ -294,9 +322,6 @@ show_fps = True
 # Main loop
 running = True
 mouse_captured = False  # Initially not captured
-# Center position
-center_pos = (screen_width // 2, screen_height // 2)
-pygame.mouse.set_pos(center_pos)
 
 reset_context = False
 while running:
@@ -305,8 +330,8 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
-        elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_F2:
+        elif event.type == keymap.KEYDOWN:
+            if event.key == keymap.K_F2:
                 if mouse_captured:
                     # Release the mouse
                     pygame.mouse.set_visible(True)
@@ -322,17 +347,17 @@ while running:
                     pygame.mouse.get_rel()  # Reset relative movement
                     print("Mouse captured.")
 
-            elif event.key == pygame.K_F3:
+            elif event.key == keymap.K_F3:
                 # Toggle FPS display
                 show_fps = not show_fps
                 print(f"FPS display toggled to {'ON' if show_fps else 'OFF'}.")
-            elif event.key == pygame.K_F4:
+            elif event.key == keymap.K_F4:
                 # Reset Context
                 reset()
                 reset_context = True
 
             # Handle '+' and '-' key presses to adjust ddim_noise_steps
-            elif event.key in [pygame.K_PLUS, pygame.K_EQUALS]:
+            elif event.key in [keymap.K_PLUS, keymap.K_EQUALS]:
                 ddim_noise_steps += 1
                 if ddim_noise_steps > 100:  # Set an upper limit if desired
                     ddim_noise_steps = 100
@@ -343,7 +368,7 @@ while running:
                 adjustment_display_time = current_time + 2  # Display for 2 seconds
                 print(adjustment_message)
 
-            elif event.key in [pygame.K_MINUS, pygame.K_UNDERSCORE]:
+            elif event.key in [keymap.K_MINUS, keymap.K_UNDERSCORE]:
                 ddim_noise_steps -= 1
                 if ddim_noise_steps < 1:
                     ddim_noise_steps = 1

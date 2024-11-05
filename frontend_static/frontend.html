@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>open-oasis</title>
+    <style>
+      :root {
+        --bg: #101015;
+        --white: #ffffff;
+      }
+
+      body {
+        background-color: var(--bg);
+      }
+
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+      }
+
+      #video {
+        border: 1px solid var(--white);
+        border-radius: 8px;
+        margin: auto;
+        display: block;
+        top: 50vh;
+        transform: translateY(2.5vh);
+        height: 95vh;
+        width: calc(95vh * 1.7778);
+      }
+    </style>
+    <script defer type="module" src="/s/client.js"></script>
+  </head>
+  <body>
+    <canvas width="640" height="360" id="video"></canvas>
+  </body>
+</html>
