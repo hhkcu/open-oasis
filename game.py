@@ -412,6 +412,6 @@ while running:
 
     last_ft = current_time
 
-    print(f"FPS is {fps}, current frame dims are {len(frame)}")
+    print(f"FPS is {fps}, current frame pixel count is {len(frame[0]) / 4}")
 
-    asyncio.run(broadcast_data( struct.pack("<HHH", fps, frame[1], frame[2]) + bytes(frame[0]) ))
+    broadcast_data( struct.pack("<HHH", fps, frame[1], frame[2]) + bytes(frame[0]) )
