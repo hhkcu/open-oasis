@@ -12,19 +12,32 @@ socket.onopen = () => {
     console.log("established connection");
 }
 
+let currentFrame = new Uint8ClampedArray(width * height * 4)
 let lastMessage = Date.now();
 let sendMessages = false;
 
-let mpos = [0,0]; 
+function applyDelta(delta) {
+    for (let i = 0; i < currentFrame.length; i++) {
+        currentFrame[i] ^= delta[i];
+    }
+}
+
+function drawFrame() {
+    const imageData = ctx.createImageData(width, height);
+    imageData.data.set(currentFrame);
+    ctx.putImageData(imageData, 0, 0);
+}
 
 socket.onmessage = (event) => {
     const view = new DataView(event.data);
     const fps = view.getUint16(0, true);
-    const width = view.getUint16(2, true);
+    const isDelta = view.getUint8(4) === 0x01;
     sfps.innerText = `Real FPS: ${fps}fps`;
     cfps.innerText = `Client FPS: ${Math.floor(1 / ((Date.now()-lastMessage) / 1000))}fps`;
-    const idata = new ImageData( new Uint8ClampedArray(event.data.slice(4)), width )
-    ctx.putImageData(idata, 0, 0);
+    const data = new Uint8ClampedArray(event.data.slice(5))
+    if (isDelta) applyDelta(data)
+        else currentFrame.set(data);
+    drawFrame();
     lastMessage = Date.now();
 }
 
