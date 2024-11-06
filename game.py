@@ -101,7 +101,36 @@ class dotdict(dict):
     __delattr__ = dict.__delitem__
 keymap = dotdict({k: k for k in ["K_e","K_ESCAPE","K_1","K_2","K_3","K_4","K_5","K_6","K_7","K_8","K_9","K_w","K_a","K_s","K_d","K_SPACE","K_LSHIFT","K_RSHIFT","K_LCTRL","K_RCTRL","K_q"]})
 
+default_actmap = {
+    "inventory": 0,
+    "ESC": 0,
+    "hotbar.1": 0,
+    "hotbar.2": 0,
+    "hotbar.3": 0,
+    "hotbar.4": 0,
+    "hotbar.5": 0,
+    "hotbar.6": 0,
+    "hotbar.7": 0,
+    "hotbar.8": 0,
+    "hotbar.9": 0,
+    "forward": 0,
+    "back": 0,
+    "left": 0,
+    "right": 0,
+    "camera": (0, 0),
+    "jump": 0,
+    "sneak": 0,
+    "sprint": 0,
+    "swapHands": 0,
+    "attack": 0,
+    "use": 0,
+    "pickItem": 0,
+    "drop": 0
+}
+
 def get_current_action():
+    if len(latest_grabbed_inputs) < 1:
+        return default_actmap
     action = {}
     inputs = latest_grabbed_inputs.pop(0)
     mouse_rel = inputs["mouse_movement"]
