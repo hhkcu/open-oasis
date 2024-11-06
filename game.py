@@ -190,15 +190,15 @@ def broadcast_data(data):
     asyncio.run_coroutine_threadsafe(_broadcast(data), asyncio.get_event_loop())
 
 def start_server():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     app = web.Application()
     app.router.add_get("/", frontend_handler)
     app.router.add_get("/stream", ws_handler)
     app.add_routes([web.static("/s", "frontend_static")])
     handler = app.make_handler()
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
     server = loop.create_server(handler, host="127.0.0.1", port=17890)
     loop.run_until_complete(server)
     loop.run_forever()
