@@ -1,6 +1,6 @@
 self.onmessage = function(event) {
-    const { data, width, height } = event.data;
-
+    let { data, width, height } = event.data;
+    data = new Uint8ClampedArray(data);
     // Perform parsing using the optimized function
     const rgbaData = new Uint8ClampedArray(width * height * 4);
     for (let y = 0; y < height; y++) {
