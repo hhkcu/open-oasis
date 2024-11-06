@@ -200,6 +200,7 @@ async def frontend_handler(request):
 
 async def ws_handler(request):
     ws = web.WebSocketResponse()
+    global clients_connected
     await ws.prepare(request)
     with lock:
         clients_connected.add(ws)
@@ -218,9 +219,14 @@ async def _broadcast(data):
 async def broadcast_data(data):
     await _broadcast(data)
 
+server_eloop: asyncio.AbstractEventLoop = None
+
 def start_server():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    global server_eloop
+    server_eloop = loop
 
     app = web.Application()
     app.router.add_get("/", frontend_handler)
@@ -413,4 +419,4 @@ while running:
 
     print(f"FPS is {fps}, current frame pixel count is {len(frame[0]) / 4}")
 
-    asyncio.run(broadcast_data( struct.pack("<HHH", fps, frame[1], frame[2]) + bytes(frame[0]) ))
+    asyncio.run_coroutine_threadsafe( broadcast_data( struct.pack("<HHH", fps, frame[1], frame[2]) + bytes(frame[0]) ), server_eloop )
