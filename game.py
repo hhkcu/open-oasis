@@ -235,13 +235,15 @@ def start_server():
 server_thread = threading.Thread(target=start_server, daemon=True)
 server_thread.start()
 
+print("load DiT")
+
 # Load DiT checkpoint
 model = DiT_models["DiT-S/2"]()
 model_ckpt = load_file("oasis500m.safetensors")
 model.load_state_dict(model_ckpt, strict=False)
 model = model.to(device).half().eval()
 
-print("loading vae")
+print("loading ViT (VAE)")
 
 # Load VAE checkpoint
 vae = VAE_models["vit-l-20-shallow-encoder"]()
