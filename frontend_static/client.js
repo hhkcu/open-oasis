@@ -1,4 +1,4 @@
-const socket = new WebSocket(`ws://${window.location.host}`);
+const socket = new WebSocket(`ws://${window.location.host}/stream`);
 socket.binaryType = "arraybuffer"
 const canvas = document.getElementById("video");
 const ctx = canvas.getContext("2d");
