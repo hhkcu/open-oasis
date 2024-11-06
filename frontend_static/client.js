@@ -13,6 +13,7 @@ socket.onopen = () => {
 }
 
 let lastMessage = Date.now();
+let sendMessages = false;
 
 let mpos = [0,0]; 
 
@@ -26,6 +27,10 @@ socket.onmessage = (event) => {
     cfps.innerText = `Client FPS: ${Math.floor(1 / ((Date.now()-lastMessage) / 1000))}fps`;
     ctx.putImageData(new ImageData( event.data.slice(6), width, height ), 0, 0);
     lastMessage = Date.now();
+}
+
+socket.onopen = () => {
+    sendMessages = true;
 }
 
 let allowInput = false;
@@ -77,10 +82,12 @@ document.addEventListener("pointerlockchange", (ple) => {
     }
 })
 
+let mousePosUpdated = false;
+
 document.addEventListener("mousemove", (me) => {
     if (!allowInput) return;
     input.mouse_movement = [me.movementY, me.movementX];
-    mpos = [me.pageX, me.pageY];
+    mousePosUpdated = true;
 })
 
 function updateMouseButtonState(event) {
@@ -124,17 +131,15 @@ function arraysEqual(a, b) {
       if (a[i] !== b[i]) return false;
     }
     return true;
-  }
-
-let lastmpos = mpos;
+}
 
 setInterval(() => {
-    if (arraysEqual(lastmpos, mpos)) {
+    if ( mousePosUpdated === false ) {
         input.mouse_movement = [0, 0];
     }
-    socket.send(JSON.stringify({ input }));
-    lastmpos = mpos
-}, 1/20);
+    if (sendMessages) socket.send(JSON.stringify({ input }));
+    mousePosUpdated = false;
+}, 1000/20);
 
 const radios = document.querySelectorAll("input[type=\"radio\"][name=\"aspect\"]");
 
@@ -150,4 +155,4 @@ setInterval(() => {
             }
         }
     })
-}, 1/10);
+}, 1000/10);
