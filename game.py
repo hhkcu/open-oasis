@@ -190,9 +190,10 @@ def action_to_tensor(action):
 clients_connected = set()
 lock = threading.Lock()
 
-async def message_received(message):
-    global latest_grabbed_inputs
-    latest_grabbed_inputs.append(json.loads(message)["input"])
+def message_received(message):
+    with lock:
+        global latest_grabbed_inputs
+        latest_grabbed_inputs.append(json.loads(message)["input"])
 
 async def frontend_handler(request):
     return web.FileResponse(f"frontend_static/frontend.html")
