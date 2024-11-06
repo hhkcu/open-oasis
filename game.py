@@ -159,45 +159,48 @@ def action_to_tensor(action):
     return actions_one_hot
 
 clients_connected = set()
+lock = threading.Lock()
 
-async def new_client(websocket, path):
-    clients_connected.add(websocket)
-    print(f"New client connected: {websocket.remote_address}")
-    try:
-        async for message in websocket:
-            await message_received(websocket, message)
-    except websockets.exceptions.ConnectionClosed:
-        print(f"Client disconnected: {websocket.remote_address}")
-
-async def broadcast_all_clients(data):
-    for client in clients_connected:
-        try:
-            await client.send(data)
-        except websockets.exceptions.ConnectionClosed:
-            clients.remove(client)
-
-async def message_received(client, message):
+async def message_received(message):
     global latest_grabbed_inputs
     latest_grabbed_inputs.append(json.loads(message)["input"])
 
-start_server = websockets.serve(new_client, "127.0.0.1", 17890, extensions=[
-    websockets.extensions.permessage_deflate.ServerPerMessageDeflateFactory(
-        server_max_window_bits=13,
-        client_max_window_bits=13,
-        compress_settings={"memLevel": 7}
-    )
-])
+async def frontend_handler(request):
+    return web.FileResponse(f"frontend_static/frontend.html")
 
-async def main_server():
-    async with start_server:
-        await asyncio.Future()
-def server():
-    asyncio.run(main_server())
+async def ws_handler(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    with lock:
+        clients_connected.add(ws)
+    async for msg in ws:
+        if msg.type == web.WSMsgType.TEXT:
+            message_received(msg.data)
+    with lock:
+        clients_connected.remove(ws)
+    return ws
 
-websocket_thread = threading.Thread(target=server)
-websocket_thread.daemon = True
-websocket_thread.start()
-frontend_thread = frontend.start()
+async def _broadcast(data):
+    with lock:
+        for ws in clients_connected:
+            if not ws.closed:
+                await ws.send_bytes(data)
+
+def broadcast_data(data):
+    asyncio.run_coroutine_threadsafe(_broadcast(data), asyncio.get_event_loop())
+
+def start_server():
+    app = web.Application()
+    app.router.add_get("/", frontend_handler)
+    app.router.add_get("/stream", ws_handler)
+    app.add_routes([web.static("/s", "frontend_static")])
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    web.run_app(app, port=17890)
+
+server_thread = threading.Thread(target=start_server, daemon=True)
+server_thread.start()
 
 # Load DiT checkpoint
 model = DiT_models["DiT-S/2"]()
@@ -235,8 +238,8 @@ context_window_size = 4
 video_id = os.environ["STARTING_IMAGE_NAME"]
 
 mp4_path = f"sample_data/{video_id}.mp4"
-video = read_video(mp4_path, pts_unit="sec")[0].float() / 255
-
+video = read_video(mp4_path, pts_unit="sec")[0].float().div_(255)
+print(video.shape)
 offset = 0
 video = video[offset:]
 n_prompt_frames = 4
@@ -377,4 +380,4 @@ while running:
 
     last_ft = current_time
 
-    asyncio.run(broadcast_all_clients( struct.pack("<L", fps) + bytes(frame) ))
+    asyncio.run(broadcast_data( struct.pack("<L", fps) + bytes(frame) ))

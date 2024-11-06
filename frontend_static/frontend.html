@@ -5,19 +5,38 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>open-oasis</title>
     <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap');
+      
       :root {
         --bg: #101015;
         --white: #ffffff;
+        --text: #ccc;
       }
 
       body {
         background-color: var(--bg);
+      }
+      
+      * {
+        color: var(--text);
+        font-family: "Inter", sans-serif;
+        font-optical-sizing: auto;
+        font-weight: 500;
+        font-style: normal;
+        margin-top: 0px;
       }
 
       html,
       body {
         margin: 0;
         height: 100%;
+        overflow: hidden;
+      }
+      
+      #data {
+        padding: 12px;
+        margin: 0px;
+        float: left;
         overflow: hidden;
       }
 
@@ -29,12 +48,33 @@
         top: 50vh;
         transform: translateY(2.5vh);
         height: 95vh;
-        width: calc(95vh * 1.7778);
+        aspect-ratio: 16 / 9;
       }
     </style>
     <script defer type="module" src="/s/client.js"></script>
   </head>
   <body>
+    <div id="data">
+      <p id="data-sfps">Real FPS: 0</p>
+      <p id="data-cfps">Client FPS: 0</p>
+      <fieldset>
+        <legend>Aspect Ratio</legend>
+        <div>
+          <input type="radio" id="aspect169" name="aspect" value="16x9" checked />
+          <label for="aspect169">16:9</label>
+        </div>
+        <div>
+          <input type="radio" id="aspect43" name="aspect" value="4x3" />
+          <label for="aspect43">4:3</label>
+        </div>
+        <div>
+          <input type="radio" id="aspect11" name="aspect" value="1x1" />
+          <label for="aspect11">1:1 (square)</label>
+        </div>
+      </fieldset>
+      
+    </div>
     <canvas width="640" height="360" id="video"></canvas>
   </body>
 </html>
+
