@@ -50,7 +50,7 @@ const keyMap = {
     ShiftRight: "K_RSHIFT"
 }
 
-canvas.addEventListener("click", async () => {
+document.addEventListener("click", async () => {
     await canvas.requestPointerLock({
         unadjustedMovement: true
     })
