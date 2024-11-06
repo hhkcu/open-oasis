@@ -18,14 +18,13 @@ let sendMessages = false;
 let mpos = [0,0]; 
 
 socket.onmessage = (event) => {
-    const data = event.data.slice(4);
     const view = new DataView(event.data);
     const fps = view.getUint16(0, true);
     const width = view.getUint16(2, true);
-    const height = view.getUint16(4, true);
     sfps.innerText = `Real FPS: ${fps}fps`;
     cfps.innerText = `Client FPS: ${Math.floor(1 / ((Date.now()-lastMessage) / 1000))}fps`;
-    ctx.putImageData(new ImageData( event.data.slice(6), width, height ), 0, 0);
+    const idata = new ImageData( new Uint8ClampedArray(event.data.slice(4)), width )
+    ctx.putImageData(idata, 0, 0);
     lastMessage = Date.now();
 }
 

@@ -419,4 +419,4 @@ while running:
 
     print(f"FPS is {fps}, current frame pixel count is {len(frame[0]) / 4}")
 
-    asyncio.run_coroutine_threadsafe( broadcast_data( struct.pack("<HHH", fps, frame[1], frame[2]) + bytes(frame[0]) ), server_eloop )
+    asyncio.run_coroutine_threadsafe( broadcast_data( struct.pack("<HH", fps, frame[1]) + bytes(frame[0]) ), server_eloop )
