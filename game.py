@@ -194,10 +194,14 @@ def start_server():
     app.router.add_get("/", frontend_handler)
     app.router.add_get("/stream", ws_handler)
     app.add_routes([web.static("/s", "frontend_static")])
+    handler = app.make_handler()
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    web.run_app(app, port=17890)
+    
+    server = loop.create_server(handler, host="127.0.0.1", port=17890)
+    loop.run_until_complete(server)
+    loop.run_forever()
 
 server_thread = threading.Thread(target=start_server, daemon=True)
 server_thread.start()
