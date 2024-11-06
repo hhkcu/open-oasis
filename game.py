@@ -378,8 +378,3 @@ while running:
     last_ft = current_time
 
     asyncio.run(broadcast_all_clients( struct.pack("<L", fps) + bytes(frame) ))
-
-    # Control frame rate
-    clock.tick(35)  # Adjust FPS as needed
-
-pygame.quit()
