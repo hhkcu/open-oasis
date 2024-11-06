@@ -211,13 +211,12 @@ async def ws_handler(request):
     return ws
 
 async def _broadcast(data):
-    with lock:
-        for ws in clients_connected:
+    for ws in clients_connected:
             if not ws.closed:
                 await ws.send_bytes(data)
 
-def broadcast_data(data):
-    asyncio.run_coroutine_threadsafe(_broadcast(data), asyncio.get_event_loop())
+async def broadcast_data(data):
+    await _broadcast(data)
 
 def start_server():
     loop = asyncio.new_event_loop()
@@ -414,4 +413,4 @@ while running:
 
     print(f"FPS is {fps}, current frame pixel count is {len(frame[0]) / 4}")
 
-    broadcast_data( struct.pack("<HHH", fps, frame[1], frame[2]) + bytes(frame[0]) )
+    asyncio.run(broadcast_data( struct.pack("<HHH", fps, frame[1], frame[2]) + bytes(frame[0]) ))

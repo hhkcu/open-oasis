@@ -14,6 +14,8 @@ socket.onopen = () => {
 
 let lastMessage = Date.now();
 
+let mpos = [0,0]; 
+
 socket.onmessage = (event) => {
     const data = event.data.slice(4);
     const view = new DataView(event.data);
@@ -78,6 +80,7 @@ document.addEventListener("pointerlockchange", (ple) => {
 document.addEventListener("mousemove", (me) => {
     if (!allowInput) return;
     input.mouse_movement = [me.movementY, me.movementX];
+    mpos = [me.pageX, me.pageY];
 })
 
 function updateMouseButtonState(event) {
@@ -112,7 +115,12 @@ document.addEventListener("keyup", (ke) => {
     }
 })
 
+let lastmpos = mpos;
+
 setInterval(() => {
+    if (mpos == lastmpos) {
+        input.mouse_movement = [0, 0];
+    }
     socket.send(JSON.stringify({ input }));
 }, 1/20);
 
