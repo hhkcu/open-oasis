@@ -24,6 +24,8 @@ import ffmpeg
 import os
 import frontend
 import websockets
+import ctypes
+import struct
 
 assert torch.cuda.is_available()
 device = "cuda:0"
@@ -99,11 +101,12 @@ class dotdict(dict):
     __delattr__ = dict.__delitem__
 keymap = dotdict({k: k for k in ["K_e","K_ESCAPE","K_1","K_2","K_3","K_4","K_5","K_6","K_7","K_8","K_9","K_w","K_a","K_s","K_d","K_SPACE","K_LSHIFT","K_RSHIFT","K_LCTRL","K_RCTRL","K_q"]})
 
-def get_current_action(mouse_rel):
+def get_current_action():
     action = {}
     inputs = latest_grabbed_inputs.pop(0)
-    keys = inputs.keys
-    mouse_buttons = inputs.mbuttons
+    mouse_rel = inputs["mouse_movement"]
+    keys = inputs["keys"]
+    mouse_buttons = inputs["mouse_buttons"]
     clamped_input = clamp_mouse_input(mouse_rel)
     # Map keys to actions
     action["inventory"] = 1 if keys[keymap.K_e] else 0
@@ -155,14 +158,23 @@ def action_to_tensor(action):
         actions_one_hot[j] = value
     return actions_one_hot
 
+clients_connected = set()
 
 async def new_client(websocket, path):
+    clients_connected.add(websocket)
     print(f"New client connected: {websocket.remote_address}")
     try:
         async for message in websocket:
             await message_received(websocket, message)
     except websockets.exceptions.ConnectionClosed:
         print(f"Client disconnected: {websocket.remote_address}")
+
+async def broadcast_all_clients(data):
+    for client in clients_connected:
+        try:
+            await client.send(data)
+        except websockets.exceptions.ConnectionClosed:
+            clients.remove(client)
 
 async def message_received(client, message):
     global latest_grabbed_inputs
@@ -297,7 +309,15 @@ def decode(x, vae):
     x_decoded = torch.clamp(x_decoded, 0, 1)
     x_decoded = (x_decoded * 255).byte().cpu().numpy()
     frame = x_decoded[0, 0]
-    return frame
+    channels, height, width = frame.shape
+    rearranged_array = np.empty((height * width * channels,), dtype=frame.dtype)
+    for h in range(height):
+        for w in range(width):
+            index = (h * width + w) * channels
+            rearranged_array[index] = frame[h, w, 0]     # Red channel
+            rearranged_array[index + 1] = frame[h, w, 1] # Green channel
+            rearranged_array[index + 2] = frame[h, w, 2] # Blue channel
+    return rearranged_array
 
 
 reset()
@@ -323,134 +343,41 @@ show_fps = True
 running = True
 mouse_captured = False  # Initially not captured
 
+last_ft = 0
+
 reset_context = False
 while running:
     current_time = time.time()
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
+    if last_ft == 0:
+        last_ft = current_time-0.1 # so u dont accidentally divide by 0
+    # Capture current action
+    action = get_current_action()
+    actions_curr = action_to_tensor(action).unsqueeze(0)  # Shape [1, num_actions]
+    actions_list.append(actions_curr)
 
-        elif event.type == keymap.KEYDOWN:
-            if event.key == keymap.K_F2:
-                if mouse_captured:
-                    # Release the mouse
-                    pygame.mouse.set_visible(True)
-                    pygame.event.set_grab(False)
-                    mouse_captured = False
-                    print("Mouse released.")
-                else:
-                    # Capture the mouse
-                    pygame.mouse.set_visible(False)
-                    pygame.event.set_grab(True)
-                    mouse_captured = True
-                    pygame.mouse.set_pos(center_pos)  # Reset to center
-                    pygame.mouse.get_rel()  # Reset relative movement
-                    print("Mouse captured.")
+    # Generate a random latent for the new frame
+    chunk = torch.randn((B, 1, *x.shape[-3:]), device=device)
+    chunk = torch.clamp(chunk, -noise_abs_max, +noise_abs_max)
+    x = torch.cat([x, chunk], dim=1)
 
-            elif event.key == keymap.K_F3:
-                # Toggle FPS display
-                show_fps = not show_fps
-                print(f"FPS display toggled to {'ON' if show_fps else 'OFF'}.")
-            elif event.key == keymap.K_F4:
-                # Reset Context
-                reset()
-                reset_context = True
+    # Implement sliding window for context frames and actions
+    if x.shape[1] > context_window_size:
+        x = x[:, -context_window_size:]
+        actions_list = actions_list[-context_window_size:]
+    # Prepare actions tensor
+    actions_tensor = torch.stack(actions_list, dim=1)  # Shape [1, context_length, num_actions]
 
-            # Handle '+' and '-' key presses to adjust ddim_noise_steps
-            elif event.key in [keymap.K_PLUS, keymap.K_EQUALS]:
-                ddim_noise_steps += 1
-                if ddim_noise_steps > 100:  # Set an upper limit if desired
-                    ddim_noise_steps = 100
-                # Update noise_range and ctx_max_noise_idx
-                noise_range = torch.linspace(-1, max_noise_level - 1, ddim_noise_steps + 1).to(device)
-                ctx_max_noise_idx = ddim_noise_steps // 10 * 3
-                adjustment_message = f"ddim_noise_steps: {ddim_noise_steps}"
-                adjustment_display_time = current_time + 2  # Display for 2 seconds
-                print(adjustment_message)
-
-            elif event.key in [keymap.K_MINUS, keymap.K_UNDERSCORE]:
-                ddim_noise_steps -= 1
-                if ddim_noise_steps < 1:
-                    ddim_noise_steps = 1
-                # Update noise_range and ctx_max_noise_idx
-                noise_range = torch.linspace(-1, max_noise_level - 1, ddim_noise_steps + 1).to(device)
-                ctx_max_noise_idx = ddim_noise_steps // 10 * 3
-                adjustment_message = f"ddim_noise_steps: {ddim_noise_steps}"
-                adjustment_display_time = current_time + 2  # Display for 2 seconds
-                print(adjustment_message)
-
-        elif event.type == pygame.MOUSEBUTTONDOWN:
-            if not mouse_captured:
-                # Capture the mouse on mouse click if it's not already captured
-                pygame.mouse.set_visible(False)
-                pygame.event.set_grab(True)
-                mouse_captured = True
-                pygame.mouse.set_pos(center_pos)  # Reset to center
-                pygame.mouse.get_rel()  # Reset relative movement
-                print("Mouse captured on click.")
-
-    if mouse_captured:
-        # Get relative mouse movement
-        rel = pygame.mouse.get_rel()
-        relative_mouse_movement = rel
-
-        # Reset mouse position to the center
-        pygame.mouse.set_pos(center_pos)
-    else:
-        relative_mouse_movement = (0, 0)
-    if not reset_context:
-        # Capture current action
-        action = get_current_action(relative_mouse_movement)
-        actions_curr = action_to_tensor(action).unsqueeze(0)  # Shape [1, num_actions]
-        actions_list.append(actions_curr)
-
-        # Generate a random latent for the new frame
-        chunk = torch.randn((B, 1, *x.shape[-3:]), device=device)
-        chunk = torch.clamp(chunk, -noise_abs_max, +noise_abs_max)
-        x = torch.cat([x, chunk], dim=1)
-
-        # Implement sliding window for context frames and actions
-        if x.shape[1] > context_window_size:
-            x = x[:, -context_window_size:]
-            actions_list = actions_list[-context_window_size:]
-        # Prepare actions tensor
-        actions_tensor = torch.stack(actions_list, dim=1)  # Shape [1, context_length, num_actions]
-    else:
-        reset_context = False
     x = sample(x, actions_tensor, ddim_noise_steps, ctx_max_noise_idx, model)
 
     frame = decode(x, vae)
 
-    # Convert to surface and display
-    frame_surface = pygame.surfarray.make_surface(np.transpose(frame, (1, 0, 2)))
-    frame_surface = pygame.transform.scale(frame_surface, (screen_width, screen_height))
-    screen.blit(frame_surface, (0, 0))
-
     # --- FPS Counter ---
-    # Update frame times
-    frame_times.append(current_time)
-    # Remove frame times older than 1 second
-    while frame_times and frame_times[0] < current_time - 1:
-        frame_times.pop(0)
-    # Calculate FPS
-    fps = len(frame_times)
-
-    if show_fps:
-        fps_text = font.render(f"FPS: {fps}", True, (255, 255, 255))  # White color
-        fps_rect = fps_text.get_rect(topright=(screen_width - 10, 10))  # 10 pixels padding from top-right
-        screen.blit(fps_text, fps_rect)
+    fps = int( 1 / (current_time - last_ft) )
     # -------------------
 
-    # --- Adjustment Info Display ---
-    if adjustment_message and current_time < adjustment_display_time:
-        adjustment_text = font.render(adjustment_message, True, (255, 255, 0))  # Yellow color
-        adjustment_rect = adjustment_text.get_rect(center=(screen_width // 2, 30))  # Top center
-        screen.blit(adjustment_text, adjustment_rect)
-    elif current_time >= adjustment_display_time:
-        adjustment_message = ""  # Clear the message
-    # ---------------------------------
+    last_ft = current_time
 
-    pygame.display.flip()
+    asyncio.run(broadcast_all_clients( struct.pack("<L", fps) + bytes(frame) ))
 
     # Control frame rate
     clock.tick(35)  # Adjust FPS as needed

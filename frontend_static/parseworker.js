@@ -3,14 +3,20 @@ self.onmessage = function(event) {
 
     // Perform parsing using the optimized function
     const rgbaData = new Uint8ClampedArray(width * height * 4);
-    let dataIndex = 0;
-
-    for (let i = 0; i < width * height; i++) {
-        rgbaData[i * 4] = data[dataIndex++];       // Red
-        rgbaData[i * 4 + 1] = data[dataIndex++];   // Green
-        rgbaData[i * 4 + 2] = data[dataIndex++];   // Blue
-        rgbaData[i * 4 + 3] = 255;                 // Alpha (fully opaque)
+    for (let y = 0; y < height; y++) {
+        const scanline = new Uint8ClampedArray(width * 4);
+        for (let scanIndex = 0; scanIndex < width; scanIndex++) {
+            let ri = (y * width) + scanIndex;
+            let gi = ri + width;
+            let bi = gi + width;
+            scanline[scanIndex*4] = data[ri];
+            scanline[scanIndex*4+1] = data[gi];
+            scanline[scanIndex*4+2] = data[bi];
+            scanline[scanIndex*4+3] = 255;
+        }
+        rgbaData.set(scanline, y*width);
     }
+    
 
     // Create ImageData from the parsed data
     const imageData = new ImageData(rgbaData, width, height);
