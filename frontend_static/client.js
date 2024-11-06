@@ -1,21 +1,29 @@
 const socket = new WebSocket(`wss://${window.location.host}/stream`);
 socket.binaryType = "arraybuffer"
 const canvas = document.getElementById("video");
+const sfps = document.getElementById("data-sfps");
+const cfps = document.getElementById("data-cfps");
 const ctx = canvas.getContext("2d");
 
 const width = canvas.width;
 const height = canvas.height;
 
-const worker = new Worker("/s/parseworker.js");
-
 socket.onopen = () => {
     console.log("established connection");
 }
 
+let lastMessage = Date.now();
+
 socket.onmessage = (event) => {
-    const fps = (new DataView(event.data)).getUint32(0, true);
     const data = event.data.slice(4);
-    worker.postMessage({ data, width, height });
+    const view = new DataView(event.data);
+    const fps = view.getUint16(0, true);
+    const width = view.getUint16(2, true);
+    const height = view.getUint16(4, true);
+    sfps.innerText = `Real FPS: ${fps}fps`;
+    cfps.innerText = `Client FPS: ${Math.floor(1 / ((Date.now()-lastMessage) / 1000))}fps`;
+    ctx.putImageData(new ImageData( event.data.slice(6), width, height ), 0, 0);
+    lastMessage = Date.now();
 }
 
 let allowInput = false;
@@ -51,7 +59,7 @@ const keyMap = {
     ShiftRight: "K_RSHIFT"
 }
 
-document.addEventListener("click", async () => {
+canvas.addEventListener("click", async () => {
     await canvas.requestPointerLock({
         unadjustedMovement: true
     })
@@ -103,11 +111,6 @@ document.addEventListener("keyup", (ke) => {
         input.keys[keyMap[ke.code]] = false;
     }
 })
-
-worker.onmessage = (event) => {
-    const imageData = event.data;
-    ctx.putImageData(imageData, 0, 0)
-}
 
 setInterval(() => {
     socket.send(JSON.stringify({ input }));

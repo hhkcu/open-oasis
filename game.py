@@ -348,15 +348,11 @@ def decode(x, vae):
     x_decoded = torch.clamp(x_decoded, 0, 1)
     x_decoded = (x_decoded * 255).byte().cpu().numpy()
     frame = x_decoded[0, 0]
-    channels, height, width = frame.shape
-    rearranged_array = np.empty((height * width * channels,), dtype=frame.dtype)
-    for h in range(height):
-        for w in range(width):
-            index = (h * width + w) * channels
-            rearranged_array[index] = frame[h, w, 0]     # Red channel
-            rearranged_array[index + 1] = frame[h, w, 1] # Green channel
-            rearranged_array[index + 2] = frame[h, w, 2] # Blue channel
-    return rearranged_array
+    H, W, C = frame.shape
+    alpha_channel = 255 * np.ones((H, W, 1), dtype=np.uint8)
+    frame_rgba = np.concatenate((frame, alpha_channel), axis=2)
+    frame_rgba_1d = frame_rgba.flatten()
+    return (frame_rgba_1d, W, H)
 
 
 reset()
@@ -416,4 +412,6 @@ while running:
 
     last_ft = current_time
 
-    asyncio.run(broadcast_data( struct.pack("<L", fps) + bytes(frame) ))
+    print(f"FPS is {fps}, current frame dims are {len(frame)}")
+
+    asyncio.run(broadcast_data( struct.pack("<HHH", fps, frame[1], frame[2]) + bytes(frame[0]) ))
