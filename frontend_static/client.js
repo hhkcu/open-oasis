@@ -115,13 +115,25 @@ document.addEventListener("keyup", (ke) => {
     }
 })
 
+function arraysEqual(a, b) {
+    if (a === b) return true;
+    if (a == null || b == null) return false;
+    if (a.length !== b.length) return false;
+  
+    for (var i = 0; i < a.length; ++i) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
+  }
+
 let lastmpos = mpos;
 
 setInterval(() => {
-    if (mpos == lastmpos) {
+    if (arraysEqual(lastmpos, mpos)) {
         input.mouse_movement = [0, 0];
     }
     socket.send(JSON.stringify({ input }));
+    lastmpos = mpos
 }, 1/20);
 
 const radios = document.querySelectorAll("input[type=\"radio\"][name=\"aspect\"]");
