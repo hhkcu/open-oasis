@@ -428,11 +428,11 @@ while running:
 
     # format: fps[short], width[short], isDelta[bool_as_byte], payload[???]
     if prev_frame:
-        delta = np.bitwise_xor(prev_frame, frame)
+        delta = np.bitwise_xor(prev_frame, frame[0])
         asyncio.run_coroutine_threadsafe( send_deltas( struct.pack("<HH?", fps, frame[1], True) + bytes(delta) ), server_eloop )
         asyncio.run_coroutine_threadsafe( send_news( struct.pack("<HH?", fps, frame[1], False) + bytes(frame[0]) ), server_eloop )
     else:
         asyncio.run_coroutine_threadsafe( send_news( struct.pack("<HH?", fps, frame[1], False) + bytes(frame[0]) ), server_eloop )
 
     send_delta = False
-    prev_frame = frame
+    prev_frame = frame[0]
