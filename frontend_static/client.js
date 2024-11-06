@@ -25,7 +25,7 @@ let input = {
     keys: {}
 }
 
-keys_array = ["K_e", "K_ESCAPE", "K_1", "K_2", "K_3", "K_4", "K_5", "K_6", "K_7", "K_8", "K_9", "K_w", "K_a", "K_s", "K_d", "K_SPACE", "K_LSHIFT", "K_RSHIFT", "K_LCTRL", "K_RCTRL", "K_q"];
+const keys_array = ["K_e", "K_ESCAPE", "K_1", "K_2", "K_3", "K_4", "K_5", "K_6", "K_7", "K_8", "K_9", "K_w", "K_a", "K_s", "K_d", "K_SPACE", "K_LSHIFT", "K_RSHIFT", "K_LCTRL", "K_RCTRL", "K_q"];
 keys_array.forEach(k => { input.keys[k] = false });
 const keyMap = {
     KeyE: "K_e",
