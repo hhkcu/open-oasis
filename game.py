@@ -3,6 +3,7 @@ from typing import Tuple
 
 import torch
 import torch._dynamo
+import intel_extension_for_pytorch as ipex
 import websockets.extensions
 import websockets.extensions.permessage_deflate
 torch._dynamo.config.suppress_errors = True
@@ -12,7 +13,7 @@ from vae import VAE_models
 from torchvision.io import read_video
 from utils import sigmoid_beta_schedule
 from einops import rearrange
-from torch import autocast
+from torch.xpu.amp import autocast
 from safetensors.torch import load_file
 
 from aiohttp import web
@@ -27,8 +28,8 @@ import websockets
 import ctypes
 import struct
 
-assert torch.cuda.is_available()
-device = "cuda:0"
+assert torch.xpu.is_available()
+device = "xpu"
 
 # Define ACTION_KEYS
 ACTION_KEYS = [
@@ -262,6 +263,7 @@ vae.load_state_dict(vae_ckpt)
 vae = vae.to(device).half().eval()
 
 
+
 # Sampling params
 B = 1
 max_noise_level = 1000
@@ -277,6 +279,9 @@ if enable_torch_compile_model:
     model = torch.compile(model, mode='reduce-overhead')
 if enable_torch_compile_vae:
     vae = torch.compile(vae, mode='reduce-overhead')
+
+model = ipex.optimize(model, dtype=torch.float16)
+vae = ipex.optimize(model, dtype=torch.float16)
 
 context_window_size = 4
 
@@ -323,7 +328,7 @@ def sample(x, actions_tensor, ddim_noise_steps, ctx_max_noise_idx, model):
                              (1 - alphas_cumprod[t[:, :-1]]).sqrt() * ctx_noise
 
         # Get model predictions
-        with autocast("cuda", dtype=torch.half):
+        with autocast(enabled=True, dtype=torch.float16, cache_enabled=False):
             v = model(x_curr, t, actions_tensor)
 
         x_start = alphas_cumprod[t].sqrt() * x_curr - (1 - alphas_cumprod[t]).sqrt() * v
