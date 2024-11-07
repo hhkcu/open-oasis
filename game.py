@@ -2,6 +2,7 @@ import time
 from typing import Tuple
 
 import torch
+from torch.nn import DataParallel
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 
@@ -233,20 +234,25 @@ def start_server():
 server_thread = threading.Thread(target=start_server, daemon=True)
 server_thread.start()
 
-print("load DiT")
+print("Loading DiT")
 
 # Load DiT checkpoint
 model = DiT_models["DiT-S/2"]()
 model_ckpt = load_file("oasis500m.safetensors")
 model.load_state_dict(model_ckpt, strict=False)
+if os.environ["USE_MULTIGPU"] == "1":
+    print("Using all GPUs available.")
+    model = DataParallel(model)
 model = model.to(device).half().eval()
 
-print("loading ViT (VAE)")
+print("Loading ViT (VAE)")
 
 # Load VAE checkpoint
 vae = VAE_models["vit-l-20-shallow-encoder"]()
 vae_ckpt = load_file("vit-l-20.safetensors")
 vae.load_state_dict(vae_ckpt)
+if os.environ["USE_MULTIGPU"] == "1":
+    vae = DataParallel(vae)
 vae = vae.to(device).half().eval()
 
 
@@ -410,8 +416,6 @@ while running:
     # -------------------
 
     last_ft = current_time
-
-    print(f"FPS is {fps}, current frame pixel count is {len(frame) / 4}")
 
     asyncio.run_coroutine_threadsafe( send_news( struct.pack("<H", fps) + frame ), server_eloop )
     
