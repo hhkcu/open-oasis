@@ -411,7 +411,7 @@ while running:
 
     last_ft = current_time
 
-    print(f"FPS is {fps}, current frame pixel count is {len(frame[0]) / 4}")
+    print(f"FPS is {fps}, current frame pixel count is {len(frame) / 4}")
 
     asyncio.run_coroutine_threadsafe( send_news( struct.pack("<H", fps) + frame ), server_eloop )
     

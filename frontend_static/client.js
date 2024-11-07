@@ -33,9 +33,6 @@ socket.onmessage = (event) => {
     image.src = URL.createObjectURL(blob);
     lastSrc = image.src;
     lastMessage = Date.now();
-}
-
-socket.onopen = () => {
     sendMessages = true;
 }
 
