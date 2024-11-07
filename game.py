@@ -3,7 +3,6 @@ from typing import Tuple
 
 import torch
 import torch._dynamo
-import websockets.extensions.permessage_deflate
 torch._dynamo.config.suppress_errors = True
 
 from dit import DiT_models
@@ -16,7 +15,6 @@ from safetensors.torch import load_file
 
 from aiohttp import web
 import threading
-import numpy as np
 import json
 import asyncio
 import os
