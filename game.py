@@ -26,6 +26,7 @@ import frontend
 import websockets
 import ctypes
 import struct
+import cv2
 
 assert torch.cuda.is_available()
 device = "cuda:0"
@@ -200,7 +201,6 @@ async def frontend_handler(request):
 
 async def ws_handler(request):
     ws = web.WebSocketResponse()
-    ws.received_fframe = False
     global clients_connected
     await ws.prepare(request)
     with lock:
@@ -214,13 +214,7 @@ async def ws_handler(request):
 
 async def send_news(data):
     for ws in clients_connected:
-            if not ws.closed and ws.received_fframe == False:
-                await ws.send_bytes(data)
-                ws.received_fframe = True
-
-async def send_deltas(data):
-    for ws in clients_connected:
-            if not ws.closed and ws.received_fframe == True:
+            if not ws.closed:
                 await ws.send_bytes(data)
 
 server_eloop: asyncio.AbstractEventLoop = None
@@ -417,6 +411,8 @@ while running:
     x = sample(x, actions_tensor, ddim_noise_steps, ctx_max_noise_idx, model)
 
     frame = decode(x, vae)
+    frame_rgb = frame.reshape((frame[1], frame[2], 4))[:, :, :3]
+    _, jpeg = cv2.imencode(".jpg", frame_rgb)
 
     # --- FPS Counter ---
     fps = int( 1 / (current_time - last_ft) )
@@ -426,13 +422,6 @@ while running:
 
     print(f"FPS is {fps}, current frame pixel count is {len(frame[0]) / 4}")
 
-    # format: fps[short], width[short], isDelta[bool_as_byte], payload[???]
-    if prev_frame is None:
-        asyncio.run_coroutine_threadsafe( send_news( struct.pack("<HH?", fps, frame[1], False) + bytes(frame[0]) ), server_eloop )
-    else:
-        delta = np.bitwise_xor(prev_frame, frame[0])
-        asyncio.run_coroutine_threadsafe( send_deltas( struct.pack("<HH?", fps, frame[1], True) + bytes(delta) ), server_eloop )
-        asyncio.run_coroutine_threadsafe( send_news( struct.pack("<HH?", fps, frame[1], False) + bytes(frame[0]) ), server_eloop )
-
+    asyncio.run_coroutine_threadsafe( send_news( struct.pack("<HH", fps, frame[1]) + jpeg.tobytes() ), server_eloop )
     send_delta = False
     prev_frame = frame[0]

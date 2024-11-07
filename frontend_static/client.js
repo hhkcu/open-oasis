@@ -12,32 +12,26 @@ socket.onopen = () => {
     console.log("established connection");
 }
 
-let currentFrame = new Uint8ClampedArray(width * height * 4)
 let lastMessage = Date.now();
 let sendMessages = false;
 
-function applyDelta(delta) {
-    for (let i = 0; i < currentFrame.length; i++) {
-        currentFrame[i] ^= delta[i];
-    }
-}
+const image = new Image();
 
-function drawFrame() {
-    const imageData = ctx.createImageData(width, height);
-    imageData.data.set(currentFrame);
-    ctx.putImageData(imageData, 0, 0);
+let lastSrc;
+
+image.onload = () => {
+    if (lastSrc) URL.revokeObjectURL(lastSrc);
+    ctx.drawImage(image, 0, 0, width, height);
 }
 
 socket.onmessage = (event) => {
     const view = new DataView(event.data);
     const fps = view.getUint16(0, true);
-    const isDelta = view.getUint8(4) === 0x01;
     sfps.innerText = `Real FPS: ${fps}fps`;
     cfps.innerText = `Client FPS: ${Math.floor(1 / ((Date.now()-lastMessage) / 1000))}fps`;
-    const data = new Uint8ClampedArray(event.data.slice(5))
-    if (isDelta) applyDelta(data)
-        else currentFrame.set(data);
-    drawFrame();
+    const blob = new Blob([event.data.slice(4)], { type: "image/jpeg" });
+    image.src = URL.createObjectURL(blob);
+    lastSrc = image.src;
     lastMessage = Date.now();
 }
 
