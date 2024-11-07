@@ -427,11 +427,11 @@ while running:
     print(f"FPS is {fps}, current frame pixel count is {len(frame[0]) / 4}")
 
     # format: fps[short], width[short], isDelta[bool_as_byte], payload[???]
-    if prev_frame:
-        delta = np.bitwise_xor(prev_frame, frame[0])
-        asyncio.run_coroutine_threadsafe( send_deltas( struct.pack("<HH?", fps, frame[1], True) + bytes(delta) ), server_eloop )
+    if prev_frame is None:
         asyncio.run_coroutine_threadsafe( send_news( struct.pack("<HH?", fps, frame[1], False) + bytes(frame[0]) ), server_eloop )
     else:
+        delta = np.bitwise_xor(prev_frame, frame[0])
+        asyncio.run_coroutine_threadsafe( send_deltas( struct.pack("<HH?", fps, frame[1], True) + bytes(delta) ), server_eloop )
         asyncio.run_coroutine_threadsafe( send_news( struct.pack("<HH?", fps, frame[1], False) + bytes(frame[0]) ), server_eloop )
 
     send_delta = False
