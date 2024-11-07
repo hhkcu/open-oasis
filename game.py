@@ -399,11 +399,6 @@ while running:
         x = x[:, -context_window_size:]
         actions_list = actions_list[-context_window_size:]
     # Prepare actions tensor
-    if prev_frame is None:
-        actions_list = []
-        initial_action = torch.zeros(len(ACTION_KEYS), device=device).unsqueeze(0)
-        for i in range(n_prompt_frames - 1):
-            actions_list.append(initial_action)
     actions_tensor = torch.stack(actions_list, dim=1)  # Shape [1, context_length, num_actions]
 
     x = sample(x, actions_tensor, ddim_noise_steps, ctx_max_noise_idx, model)
