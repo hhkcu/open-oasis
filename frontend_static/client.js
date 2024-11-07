@@ -145,7 +145,7 @@ setInterval(() => {
     }
     if (sendMessages) socket.send(JSON.stringify({ input }));
     mousePosUpdated = false;
-}, 1000/20);
+}, 1000/10);
 
 const radios = document.querySelectorAll("input[type=\"radio\"][name=\"aspect\"]");
 
