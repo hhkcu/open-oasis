@@ -3,7 +3,6 @@ from typing import Tuple
 
 import torch
 import torch._dynamo
-import websockets.extensions
 import websockets.extensions.permessage_deflate
 torch._dynamo.config.suppress_errors = True
 
@@ -20,13 +19,11 @@ import threading
 import numpy as np
 import json
 import asyncio
-import ffmpeg
 import os
-import frontend
 import websockets
-import ctypes
 import struct
-import cv2
+import io
+from PIL import Image
 
 assert torch.cuda.is_available()
 device = "cuda:0"
@@ -351,11 +348,10 @@ def decode(x, vae):
     x_decoded = torch.clamp(x_decoded, 0, 1)
     x_decoded = (x_decoded * 255).byte().cpu().numpy()
     frame = x_decoded[0, 0]
-    H, W, C = frame.shape
-    alpha_channel = 255 * np.ones((H, W, 1), dtype=np.uint8)
-    frame_rgba = np.concatenate((frame, alpha_channel), axis=2)
-    frame_rgba_1d = frame_rgba.flatten()
-    return (frame_rgba_1d, W, H)
+    pili = Image.fromarray(frame)
+    buffer = io.BytesIO()
+    pili.save(buffer, format="WEBP", quality=75)
+    return buffer.getvalue()
 
 
 reset()
@@ -411,8 +407,6 @@ while running:
     x = sample(x, actions_tensor, ddim_noise_steps, ctx_max_noise_idx, model)
 
     frame = decode(x, vae)
-    frame_rgb = frame.reshape((frame[1], frame[2], 4))[:, :, :3]
-    _, jpeg = cv2.imencode(".jpg", frame_rgb)
 
     # --- FPS Counter ---
     fps = int( 1 / (current_time - last_ft) )
@@ -422,6 +416,4 @@ while running:
 
     print(f"FPS is {fps}, current frame pixel count is {len(frame[0]) / 4}")
 
-    asyncio.run_coroutine_threadsafe( send_news( struct.pack("<HH", fps, frame[1]) + jpeg.tobytes() ), server_eloop )
-    send_delta = False
-    prev_frame = frame[0]
+    asyncio.run_coroutine_threadsafe( send_news( struct.pack("<H", fps) + frame ), server_eloop )

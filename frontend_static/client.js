@@ -29,7 +29,7 @@ socket.onmessage = (event) => {
     const fps = view.getUint16(0, true);
     sfps.innerText = `Real FPS: ${fps}fps`;
     cfps.innerText = `Client FPS: ${Math.floor(1 / ((Date.now()-lastMessage) / 1000))}fps`;
-    const blob = new Blob([event.data.slice(4)], { type: "image/jpeg" });
+    const blob = new Blob([event.data.slice(2)], { type: "image/webp" });
     image.src = URL.createObjectURL(blob);
     lastSrc = image.src;
     lastMessage = Date.now();
