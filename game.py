@@ -402,6 +402,8 @@ while running:
         x = x[:, -context_window_size:]
         actions_list = actions_list[-context_window_size:]
     # Prepare actions tensor
+    if prev_frame is None:
+        actions_list = [] # it takesa  while to load so erm...
     actions_tensor = torch.stack(actions_list, dim=1)  # Shape [1, context_length, num_actions]
 
     x = sample(x, actions_tensor, ddim_noise_steps, ctx_max_noise_idx, model)
@@ -417,3 +419,5 @@ while running:
     print(f"FPS is {fps}, current frame pixel count is {len(frame[0]) / 4}")
 
     asyncio.run_coroutine_threadsafe( send_news( struct.pack("<H", fps) + frame ), server_eloop )
+    
+    prev_frame = frame
