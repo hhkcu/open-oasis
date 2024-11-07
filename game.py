@@ -18,7 +18,6 @@ import threading
 import json
 import asyncio
 import os
-import websockets
 import struct
 import io
 from PIL import Image
