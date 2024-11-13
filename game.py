@@ -2,7 +2,6 @@ import time
 from typing import Tuple
 
 import torch
-from torch.nn import DataParallel
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 
@@ -12,19 +11,32 @@ from torchvision.io import read_video
 from utils import sigmoid_beta_schedule
 from einops import rearrange
 from torch import autocast
-from safetensors.torch import load_file
-
-from aiohttp import web
-import threading
-import json
-import asyncio
-import os
-import struct
-import io
+import os, io, asyncio, struct
 from PIL import Image
+import frontendmanager
+import numpy as np
 
 assert torch.cuda.is_available()
 device = "cuda:0"
+# Sampling params
+model_path = "oasis500m.pt"
+vae_path = "vit-l-20.pt"
+B = 1
+max_noise_level = 1000
+ddim_noise_steps = 16
+noise_abs_max = 20
+enable_torch_compile_model = True
+enable_torch_compile_vae = True
+# Adjustable context window size
+context_window_size = 4  # Adjust this value as needed
+n_prompt_frames = 4
+offset = 0
+scaling_factor = 0.07843137255
+# Get input video (first frame as prompt)
+video_id = os.environ["STARTING_IMAGE_NAME"]
+stabilization_level = 15
+screen_width = 1024  # Adjust as needed
+screen_height = 1024  # Adjust as needed
 
 # Define ACTION_KEYS
 ACTION_KEYS = [
@@ -89,6 +101,9 @@ def clamp_mouse_input(mouse_input: Tuple[int, int]) -> Tuple[float, float]:
 
     return (clamped_x, clamped_y)
 
+server_thread = frontendmanager.start()
+server_eloop = frontendmanager.get_event_loop()
+
 latest_grabbed_inputs = []
 
 class dotdict(dict):
@@ -124,7 +139,9 @@ default_actmap = {
     "drop": 0
 }
 
-def get_current_action():
+# Helper functions to capture live actions
+def get_current_action(mouse_rel):
+    action = {}
     if len(latest_grabbed_inputs) < 1:
         return default_actmap
     action = {}
@@ -132,7 +149,6 @@ def get_current_action():
     mouse_rel = inputs["mouse_movement"]
     keys = inputs["keys"]
     mouse_buttons = inputs["mouse_buttons"]
-    clamped_input = clamp_mouse_input(mouse_rel)
     # Map keys to actions
     action["inventory"] = 1 if keys[keymap.K_e] else 0
     action["ESC"] = 1 if keys[keymap.K_ESCAPE] else 0
@@ -183,88 +199,20 @@ def action_to_tensor(action):
         actions_one_hot[j] = value
     return actions_one_hot
 
-clients_connected = set()
-lock = threading.Lock()
-
-def message_received(message):
-    with lock:
-        global latest_grabbed_inputs
-        latest_grabbed_inputs.append(json.loads(message)["input"])
-
-async def frontend_handler(request):
-    return web.FileResponse(f"frontend_static/frontend.html")
-
-async def ws_handler(request):
-    ws = web.WebSocketResponse()
-    global clients_connected
-    await ws.prepare(request)
-    with lock:
-        clients_connected.add(ws)
-    async for msg in ws:
-        if msg.type == web.WSMsgType.TEXT:
-            message_received(msg.data)
-    with lock:
-        clients_connected.remove(ws)
-    return ws
-
-async def send_news(data):
-    for ws in clients_connected:
-            if not ws.closed:
-                await ws.send_bytes(data)
-
-server_eloop: asyncio.AbstractEventLoop = None
-
-def start_server():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    global server_eloop
-    server_eloop = loop
-
-    app = web.Application()
-    app.router.add_get("/", frontend_handler)
-    app.router.add_get("/stream", ws_handler)
-    app.add_routes([web.static("/s", "frontend_static")])
-    handler = app.make_handler()
-
-    server = loop.create_server(handler, host="127.0.0.1", port=17890)
-    loop.run_until_complete(server)
-    loop.run_forever()
-
-server_thread = threading.Thread(target=start_server, daemon=True)
-server_thread.start()
-
-print("Loading DiT")
-
 # Load DiT checkpoint
+ckpt = torch.load(model_path)
 model = DiT_models["DiT-S/2"]()
-model_ckpt = load_file("oasis500m.safetensors")
-model.load_state_dict(model_ckpt, strict=False)
-if os.environ["USE_MULTIGPU"] == "1":
-    print("Using all GPUs available.")
-    model = DataParallel(model)
+model.load_state_dict(ckpt, strict=False)
 model = model.to(device).half().eval()
 
-print("Loading ViT (VAE)")
-
 # Load VAE checkpoint
+vae_ckpt = torch.load(vae_path)
 vae = VAE_models["vit-l-20-shallow-encoder"]()
-vae_ckpt = load_file("vit-l-20.safetensors")
 vae.load_state_dict(vae_ckpt)
-if os.environ["USE_MULTIGPU"] == "1":
-    vae = DataParallel(vae)
 vae = vae.to(device).half().eval()
 
-
-# Sampling params
-B = 1
-max_noise_level = 1000
-ddim_noise_steps = 16
 noise_range = torch.linspace(-1, max_noise_level - 1, ddim_noise_steps + 1).to(device)
-noise_abs_max = 20
 ctx_max_noise_idx = ddim_noise_steps // 10 * 3
-enable_torch_compile_model = True
-enable_torch_compile_vae = True
 
 if enable_torch_compile_model:
     # Optional compilation for performance
@@ -272,17 +220,14 @@ if enable_torch_compile_model:
 if enable_torch_compile_vae:
     vae = torch.compile(vae, mode='reduce-overhead')
 
-context_window_size = 4
 
-video_id = os.environ["STARTING_IMAGE_NAME"]
+# mp4_path = '/home/mix/Playground/ComfyUI/output/game_00001.mp4'
 
 mp4_path = f"sample_data/{video_id}.mp4"
-video = read_video(mp4_path, pts_unit="sec")[0].float().div_(255)
-print(video.shape)
-offset = 0
+video = read_video(mp4_path, pts_unit="sec")[0].float() / 255
+
 video = video[offset:]
-n_prompt_frames = 4
-scaling_factor = 0.07843137255
+
 # Initialize action list
 def reset():
     global x
@@ -294,40 +239,63 @@ def reset():
     for i in range(n_prompt_frames - 1):
         actions_list.append(initial_action)
 
+
 @torch.inference_mode
-def sample(x, actions_tensor, ddim_noise_steps, ctx_max_noise_idx, model):
-    # Prepare time steps
-    context_length = x.shape[1]
+def sample(x, actions_tensor, ddim_noise_steps, stabilization_level, alphas_cumprod, noise_range, noise_abs_max, model):
+    """
+    Sample function with constant alpha_next and stabilization_level implemented.
+
+    Args:
+        x (torch.Tensor): Current latent tensor of shape [B, T, C, H, W].
+        actions_tensor (torch.Tensor): Actions tensor of shape [B, T, num_actions].
+        ddim_noise_steps (int): Number of DDIM noise steps.
+        stabilization_level (int): Level to stabilize the initial frames.
+        alphas_cumprod (torch.Tensor): Cumulative product of alphas for each timestep.
+        noise_range (torch.Tensor): Noise schedule tensor.
+        noise_abs_max (float): Maximum absolute noise value.
+        model (torch.nn.Module): The diffusion model.
+
+    Returns:
+        torch.Tensor: Updated latent tensor after sampling.
+    """
+    B, context_length, C, H, W = x.shape
+
     for noise_idx in reversed(range(1, ddim_noise_steps + 1)):
         # Set up noise values
-        ctx_noise_idx = min(noise_idx, ctx_max_noise_idx)
-        t_ctx = torch.full((B, context_length - 1), noise_range[ctx_noise_idx], dtype=torch.long, device=device)
-        t_last = torch.full((B, 1), noise_range[noise_idx], dtype=torch.long, device=device)
-        t = torch.cat([t_ctx, t_last], dim=1)
-        t_next = torch.cat([t_ctx, torch.full((B, 1), noise_range[noise_idx - 1], dtype=torch.long, device=device)],
-                           dim=1)
+        t_ctx = torch.full((B, context_length - 1), stabilization_level - 1, dtype=torch.long, device=device)
+        t = torch.full((B, 1), noise_range[noise_idx], dtype=torch.long, device=device)
+        t_next = torch.full((B, 1), noise_range[noise_idx - 1], dtype=torch.long, device=device)
         t_next = torch.where(t_next < 0, t, t_next)
-
-        # Add noise to context frames (except the last frame)
-        x_curr = x.clone()
-        if context_length > 1:
-            ctx_noise = torch.randn_like(x_curr[:, :-1])
-            ctx_noise = torch.clamp(ctx_noise, -noise_abs_max, +noise_abs_max)
-            x_curr[:, :-1] = alphas_cumprod[t[:, :-1]].sqrt() * x_curr[:, :-1] + \
-                             (1 - alphas_cumprod[t[:, :-1]]).sqrt() * ctx_noise
+        t = torch.cat([t_ctx, t], dim=1)
+        t_next = torch.cat([t_ctx, t_next], dim=1)
 
         # Get model predictions
         with autocast("cuda", dtype=torch.half):
-            v = model(x_curr, t, actions_tensor)
+            v = model(x, t, actions_tensor)
 
-        x_start = alphas_cumprod[t].sqrt() * x_curr - (1 - alphas_cumprod[t]).sqrt() * v
-        x_noise = ((1 / alphas_cumprod[t]).sqrt() * x_curr - x_start) / \
-                  (1 / alphas_cumprod[t] - 1).sqrt()
+        # Compute x_start and x_noise
+        x_start = alphas_cumprod[t].sqrt() * x - (1 - alphas_cumprod[t]).sqrt() * v
+        x_noise = ((1 / alphas_cumprod[t]).sqrt() * x - x_start) / (1 / alphas_cumprod[t] - 1).sqrt()
 
-        # Get frame prediction
-        x_pred = alphas_cumprod[t_next].sqrt() * x_start + x_noise * (1 - alphas_cumprod[t_next]).sqrt()
+        # Compute alpha_next with constant values for context frames
+        alpha_next = alphas_cumprod[t_next].clone()
+        alpha_next[:, :-1] = torch.ones_like(alpha_next[:, :-1])
+
+        # Ensure the last frame has alpha_next set to 1 if it's the first noise step
+        if noise_idx == 1:
+            alpha_next[:, -1:] = torch.ones_like(alpha_next[:, -1:])
+
+        # Compute the predicted x
+        x_pred = alpha_next.sqrt() * x_start + x_noise * (1 - alpha_next).sqrt()
+
+        # Update only the last frame in the latent tensor
         x[:, -1:] = x_pred[:, -1:]
+
+        # Optionally clamp the noise to maintain stability
+        x[:, -1:] = torch.clamp(x[:, -1:], -noise_abs_max, noise_abs_max)
+
     return x
+
 
 @torch.inference_mode
 def encode(video, vae):
@@ -356,7 +324,6 @@ def decode(x, vae):
     pili.save(buffer, format="WEBP", quality=75)
     return buffer.getvalue()
 
-
 reset()
 
 # Get alphas
@@ -369,10 +336,6 @@ alphas_cumprod = rearrange(alphas_cumprod, "T -> T 1 1 1")
 frame_times = []  # List to store timestamps of recent frames
 fps = 0.0
 
-# Initialize variables for displaying adjustment info
-adjustment_message = ""
-adjustment_display_time = 0  # Time when the message should stop displaying
-
 # Initialize variable for toggling FPS display
 show_fps = True
 
@@ -380,43 +343,40 @@ show_fps = True
 running = True
 mouse_captured = False  # Initially not captured
 
-last_ft = 0
-
-send_delta = True
-prev_frame = None
-
 reset_context = False
 while running:
     current_time = time.time()
-    if last_ft == 0:
-        last_ft = current_time-0.1 # so u dont accidentally divide by 0
-    # Capture current action
-    action = get_current_action()
-    actions_curr = action_to_tensor(action).unsqueeze(0)  # Shape [1, num_actions]
-    actions_list.append(actions_curr)
+    if not reset_context:
+        # Capture current action
+        action = get_current_action()
+        actions_curr = action_to_tensor(action).unsqueeze(0)  # Shape [1, num_actions]
+        actions_list.append(actions_curr)
 
-    # Generate a random latent for the new frame
-    chunk = torch.randn((B, 1, *x.shape[-3:]), device=device)
-    chunk = torch.clamp(chunk, -noise_abs_max, +noise_abs_max)
-    x = torch.cat([x, chunk], dim=1)
+        # Generate a random latent for the new frame
+        chunk = torch.randn((B, 1, *x.shape[-3:]), device=device)
+        chunk = torch.clamp(chunk, -noise_abs_max, +noise_abs_max)
+        x = torch.cat([x, chunk], dim=1)
 
-    # Implement sliding window for context frames and actions
-    if x.shape[1] > context_window_size:
-        x = x[:, -context_window_size:]
-        actions_list = actions_list[-context_window_size:]
-    # Prepare actions tensor
-    actions_tensor = torch.stack(actions_list, dim=1)  # Shape [1, context_length, num_actions]
-
-    x = sample(x, actions_tensor, ddim_noise_steps, ctx_max_noise_idx, model)
+        # Implement sliding window for context frames and actions
+        if x.shape[1] > context_window_size:
+            x = x[:, -context_window_size:]
+            actions_list = actions_list[-context_window_size:]
+        # Prepare actions tensor
+        actions_tensor = torch.stack(actions_list, dim=1)  # Shape [1, context_length, num_actions]
+    else:
+        reset_context = False
+    
+    x = sample(x, actions_tensor, ddim_noise_steps, stabilization_level, alphas_cumprod, noise_range, noise_abs_max, model)
 
     frame = decode(x, vae)
 
     # --- FPS Counter ---
-    fps = int( 1 / (current_time - last_ft) )
-    # -------------------
+    # Update frame times
+    frame_times.append(current_time)
+    # Remove frame times older than 1 second
+    while frame_times and frame_times[0] < current_time - 1:
+        frame_times.pop(0)
+    # Calculate FPS
+    fps = len(frame_times)
 
-    last_ft = current_time
-
-    asyncio.run_coroutine_threadsafe( send_news( struct.pack("<H", fps) + frame ), server_eloop )
-    
-    prev_frame = frame
+    asyncio.run_coroutine_threadsafe( frontendmanager.send_news( struct.pack("<H", fps) + frame ), server_eloop )

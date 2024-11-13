@@ -3,6 +3,7 @@ References:
     - VQGAN: https://github.com/CompVis/taming-transformers
     - MAE: https://github.com/facebookresearch/mae
 """
+
 import numpy as np
 import math
 import functools
@@ -15,6 +16,7 @@ from timm.models.vision_transformer import Mlp
 from timm.layers.helpers import to_2tuple
 from rotary_embedding_torch import RotaryEmbedding, apply_rotary_emb
 from dit import PatchEmbed
+
 
 class DiagonalGaussianDistribution(object):
     def __init__(self, parameters, deterministic=False, dim=1):
@@ -31,18 +33,15 @@ class DiagonalGaussianDistribution(object):
         self.std = torch.exp(0.5 * self.logvar)
         self.var = torch.exp(self.logvar)
         if self.deterministic:
-            self.var = self.std = torch.zeros_like(self.mean).to(
-                device=self.parameters.device
-            )
+            self.var = self.std = torch.zeros_like(self.mean).to(device=self.parameters.device)
 
     def sample(self):
-        x = self.mean + self.std * torch.randn(self.mean.shape).to(
-            device=self.parameters.device
-        )
+        x = self.mean + self.std * torch.randn(self.mean.shape).to(device=self.parameters.device)
         return x
 
     def mode(self):
         return self.mean
+
 
 class Attention(nn.Module):
     def __init__(
@@ -52,9 +51,6 @@ class Attention(nn.Module):
         frame_height,
         frame_width,
         qkv_bias=False,
-        attn_drop=0.0,
-        proj_drop=0.0,
-        is_causal=False,
     ):
         super().__init__()
         self.num_heads = num_heads
@@ -63,15 +59,12 @@ class Attention(nn.Module):
         self.frame_width = frame_width
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
-        self.attn_drop = attn_drop
         self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-        self.is_causal = is_causal
 
         rotary_freqs = RotaryEmbedding(
             dim=head_dim // 4,
-            freqs_for="pixel", 
-            max_freq=frame_height*frame_width,
+            freqs_for="pixel",
+            max_freq=frame_height * frame_width,
         ).get_axial_freqs(frame_height, frame_width)
         self.register_buffer("rotary_freqs", rotary_freqs, persistent=False)
 
@@ -79,36 +72,41 @@ class Attention(nn.Module):
         B, N, C = x.shape
         assert N == self.frame_height * self.frame_width
 
-        qkv = (
-            self.qkv(x)
-            .reshape(B, N, 3, self.num_heads, C // self.num_heads)
-            .permute(2, 0, 3, 1, 4)
-        )
-        q, k, v = (
-            qkv[0],
-            qkv[1],
-            qkv[2],
-        )  # make torchscript happy (cannot use tensor as tuple)
+        q, k, v = self.qkv(x).chunk(3, dim=-1)
 
-        if self.rotary_freqs is not None:
-            q = rearrange(q, "b h (H W) d -> b h H W d", H=self.frame_height, W=self.frame_width)
-            k = rearrange(k, "b h (H W) d -> b h H W d", H=self.frame_height, W=self.frame_width)
-            q = apply_rotary_emb(self.rotary_freqs, q)
-            k = apply_rotary_emb(self.rotary_freqs, k)
-            q = rearrange(q, "b h H W d -> b h (H W) d")
-            k = rearrange(k, "b h H W d -> b h (H W) d")
-
-        attn = F.scaled_dot_product_attention(
+        q = rearrange(
             q,
-            k,
-            v,
-            dropout_p=self.attn_drop,
-            is_causal=self.is_causal,
+            "b (H W) (h d) -> b h H W d",
+            H=self.frame_height,
+            W=self.frame_width,
+            h=self.num_heads,
         )
-        x = attn.transpose(1, 2).reshape(B, N, C)
+        k = rearrange(
+            k,
+            "b (H W) (h d) -> b h H W d",
+            H=self.frame_height,
+            W=self.frame_width,
+            h=self.num_heads,
+        )
+        v = rearrange(
+            v,
+            "b (H W) (h d) -> b h H W d",
+            H=self.frame_height,
+            W=self.frame_width,
+            h=self.num_heads,
+        )
+
+        q = apply_rotary_emb(self.rotary_freqs, q)
+        k = apply_rotary_emb(self.rotary_freqs, k)
+
+        q = rearrange(q, "b h H W d -> b h (H W) d")
+        k = rearrange(k, "b h H W d -> b h (H W) d")
+        v = rearrange(v, "b h H W d -> b h (H W) d")
+
+        x = F.scaled_dot_product_attention(q, k, v)
+        x = rearrange(x, "b h N d -> b N (h d)")
 
         x = self.proj(x)
-        x = self.proj_drop(x)
         return x
 
 
@@ -121,10 +119,7 @@ class AttentionBlock(nn.Module):
         frame_width,
         mlp_ratio=4.0,
         qkv_bias=False,
-        drop=0.0,
-        attn_drop=0.0,
         attn_causal=False,
-        drop_path=0.0,
         act_layer=nn.GELU,
         norm_layer=nn.LayerNorm,
     ):
@@ -136,24 +131,18 @@ class AttentionBlock(nn.Module):
             frame_height,
             frame_width,
             qkv_bias=qkv_bias,
-            attn_drop=attn_drop,
-            proj_drop=drop,
-            is_causal=attn_causal,
         )
-        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
-        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(
             in_features=dim,
             hidden_features=mlp_hidden_dim,
             act_layer=act_layer,
-            drop=drop,
         )
 
     def forward(self, x):
-        x = x + self.drop_path(self.attn(self.norm1(x)))
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        x = x + self.attn(self.norm1(x))
+        x = x + self.mlp(self.norm2(x))
         return x
 
 
@@ -235,7 +224,6 @@ class AutoencoderKL(nn.Module):
         # initialize this weight first
         self.initialize_weights()
 
-
     def initialize_weights(self):
         # initialization
         # initialize nn.Linear and nn.LayerNorm
@@ -265,23 +253,15 @@ class AutoencoderKL(nn.Module):
             self.patch_size,
             self.seq_w,
             self.patch_size,
-        ).permute(
-            [0, 1, 3, 5, 2, 4]
-        )  # [b, c, h, p, w, p] --> [b, c, p, p, h, w]
-        x = x.reshape(
-            bsz, self.patch_dim, self.seq_h, self.seq_w
-        )  # --> [b, cxpxp, h, w]
-        x = x.permute([0, 2, 3, 1]).reshape(
-            bsz, self.seq_len, self.patch_dim
-        )  # --> [b, hxw, cxpxp]
+        ).permute([0, 1, 3, 5, 2, 4])  # [b, c, h, p, w, p] --> [b, c, p, p, h, w]
+        x = x.reshape(bsz, self.patch_dim, self.seq_h, self.seq_w)  # --> [b, cxpxp, h, w]
+        x = x.permute([0, 2, 3, 1]).reshape(bsz, self.seq_len, self.patch_dim)  # --> [b, hxw, cxpxp]
         return x
 
     def unpatchify(self, x):
         bsz = x.shape[0]
         # unpatchify
-        x = x.reshape(bsz, self.seq_h, self.seq_w, self.patch_dim).permute(
-            [0, 3, 1, 2]
-        )  # [b, h, w, cxpxp] --> [b, cxpxp, h, w]
+        x = x.reshape(bsz, self.seq_h, self.seq_w, self.patch_dim).permute([0, 3, 1, 2])  # [b, h, w, cxpxp] --> [b, cxpxp, h, w]
         x = x.reshape(
             bsz,
             3,
@@ -289,9 +269,7 @@ class AutoencoderKL(nn.Module):
             self.patch_size,
             self.seq_h,
             self.seq_w,
-        ).permute(
-            [0, 1, 4, 2, 5, 3]
-        )  # [b, c, p, p, h, w] --> [b, c, h, p, w, p]
+        ).permute([0, 1, 4, 2, 5, 3])  # [b, c, p, p, h, w] --> [b, c, h, p, w, p]
         x = x.reshape(
             bsz,
             3,
@@ -313,9 +291,7 @@ class AutoencoderKL(nn.Module):
         moments = self.quant_conv(x)
         if not self.use_variational:
             moments = torch.cat((moments, torch.zeros_like(moments)), 2)
-        posterior = DiagonalGaussianDistribution(
-            moments, deterministic=(not self.use_variational), dim=2
-        )
+        posterior = DiagonalGaussianDistribution(moments, deterministic=(not self.use_variational), dim=2)
         return posterior
 
     def decode(self, z):
@@ -357,6 +333,7 @@ class AutoencoderKL(nn.Module):
     def get_last_layer(self):
         return self.predictor.weight
 
+
 def ViT_L_20_Shallow_Encoder(**kwargs):
     if "latent_dim" in kwargs:
         latent_dim = kwargs.pop("latent_dim")
@@ -375,6 +352,7 @@ def ViT_L_20_Shallow_Encoder(**kwargs):
         input_width=640,
         **kwargs,
     )
+
 
 VAE_models = {
     "vit-l-20-shallow-encoder": ViT_L_20_Shallow_Encoder,

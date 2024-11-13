@@ -4,16 +4,17 @@ References:
     - Diffusion Forcing: https://github.com/buoyancy99/diffusion-forcing/blob/main/algorithms/diffusion_forcing/models/unet3d.py
     - Latte: https://github.com/Vchitect/Latte/blob/main/models/latte.py
 """
+
 from typing import Optional, Literal
 import torch
 from torch import nn
 from rotary_embedding_torch import RotaryEmbedding
 from einops import rearrange
-from embeddings import Timesteps, TimestepEmbedding
 from attention import SpatialAxialAttention, TemporalAxialAttention
 from timm.models.vision_transformer import Mlp
 from timm.layers.helpers import to_2tuple
 import math
+
 
 def modulate(x, shift, scale):
     fixed_dims = [1] * len(shift.shape[1:])
@@ -24,12 +25,14 @@ def modulate(x, shift, scale):
         scale = scale.unsqueeze(-2)
     return x * (1 + scale) + shift
 
+
 def gate(x, g):
     fixed_dims = [1] * len(g.shape[1:])
     g = g.repeat(x.shape[0] // g.shape[0], *fixed_dims)
     while g.dim() < x.dim():
         g = g.unsqueeze(-2)
     return g * x
+
 
 class PatchEmbed(nn.Module):
     """2D Image to Patch Embedding"""
@@ -53,16 +56,12 @@ class PatchEmbed(nn.Module):
         self.num_patches = self.grid_size[0] * self.grid_size[1]
         self.flatten = flatten
 
-        self.proj = nn.Conv2d(
-            in_chans, embed_dim, kernel_size=patch_size, stride=patch_size
-        )
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
     def forward(self, x, random_sample=False):
         B, C, H, W = x.shape
-        assert random_sample or (
-            H == self.img_size[0] and W == self.img_size[1]
-        ), f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
+        assert random_sample or (H == self.img_size[0] and W == self.img_size[1]), f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
         x = self.proj(x)
         if self.flatten:
             x = rearrange(x, "B C H W -> B (H W) C")
@@ -71,14 +70,16 @@ class PatchEmbed(nn.Module):
         x = self.norm(x)
         return x
 
+
 class TimestepEmbedder(nn.Module):
     """
     Embeds scalar timesteps into vector representations.
     """
+
     def __init__(self, hidden_size, frequency_embedding_size=256):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(frequency_embedding_size, hidden_size, bias=True), # hidden_size is diffusion model hidden size
+            nn.Linear(frequency_embedding_size, hidden_size, bias=True),  # hidden_size is diffusion model hidden size
             nn.SiLU(),
             nn.Linear(hidden_size, hidden_size, bias=True),
         )
@@ -96,9 +97,7 @@ class TimestepEmbedder(nn.Module):
         """
         # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
         half = dim // 2
-        freqs = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
-        ).to(device=t.device)
+        freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half).to(device=t.device)
         args = t[:, None].float() * freqs[None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if dim % 2:
@@ -110,49 +109,72 @@ class TimestepEmbedder(nn.Module):
         t_emb = self.mlp(t_freq)
         return t_emb
 
+
 class FinalLayer(nn.Module):
     """
     The final layer of DiT.
     """
+
     def __init__(self, hidden_size, patch_size, out_channels):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 2 * hidden_size, bias=True)
-        )
+        self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True))
 
     def forward(self, x, c):
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1)
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
         return x
-    
+
+
 class SpatioTemporalDiTBlock(nn.Module):
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, is_causal=True, spatial_rotary_emb: Optional[RotaryEmbedding] = None, temporal_rotary_emb: Optional[RotaryEmbedding] = None):
+    def __init__(
+        self,
+        hidden_size,
+        num_heads,
+        mlp_ratio=4.0,
+        is_causal=True,
+        spatial_rotary_emb: Optional[RotaryEmbedding] = None,
+        temporal_rotary_emb: Optional[RotaryEmbedding] = None,
+    ):
         super().__init__()
         self.is_causal = is_causal
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
 
         self.s_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.s_attn = SpatialAxialAttention(hidden_size, heads=num_heads, dim_head=hidden_size // num_heads, rotary_emb=spatial_rotary_emb)
-        self.s_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.s_mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
-        self.s_adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+        self.s_attn = SpatialAxialAttention(
+            hidden_size,
+            heads=num_heads,
+            dim_head=hidden_size // num_heads,
+            rotary_emb=spatial_rotary_emb,
         )
+        self.s_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.s_mlp = Mlp(
+            in_features=hidden_size,
+            hidden_features=mlp_hidden_dim,
+            act_layer=approx_gelu,
+            drop=0,
+        )
+        self.s_adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 6 * hidden_size, bias=True))
 
         self.t_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.t_attn = TemporalAxialAttention(hidden_size, heads=num_heads, dim_head=hidden_size // num_heads, is_causal=is_causal, rotary_emb=temporal_rotary_emb)
-        self.t_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.t_mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
-        self.t_adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+        self.t_attn = TemporalAxialAttention(
+            hidden_size,
+            heads=num_heads,
+            dim_head=hidden_size // num_heads,
+            is_causal=is_causal,
+            rotary_emb=temporal_rotary_emb,
         )
+        self.t_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.t_mlp = Mlp(
+            in_features=hidden_size,
+            hidden_features=mlp_hidden_dim,
+            act_layer=approx_gelu,
+            drop=0,
+        )
+        self.t_adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 6 * hidden_size, bias=True))
 
     def forward(self, x, c):
         B, T, H, W, D = x.shape
@@ -169,10 +191,12 @@ class SpatioTemporalDiTBlock(nn.Module):
 
         return x
 
+
 class DiT(nn.Module):
     """
     Diffusion model with a Transformer backbone.
     """
+
     def __init__(
         self,
         input_h=18,
@@ -225,6 +249,7 @@ class DiT(nn.Module):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
+
         self.apply(_basic_init)
 
         # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
@@ -260,7 +285,7 @@ class DiT(nn.Module):
         w = x.shape[2]
 
         x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
-        x = torch.einsum('nhwpqc->nchpwq', x)
+        x = torch.einsum("nhwpqc->nchpwq", x)
         imgs = x.reshape(shape=(x.shape[0], c, h * p, w * p))
         return imgs
 
@@ -286,6 +311,7 @@ class DiT(nn.Module):
         c = c.view(B, T, D)                  # (B, T, D)
         
         if external_cond is not None:
+
             c += self.external_cond(external_cond)
 
         # Pass through transformer blocks
@@ -302,7 +328,9 @@ class DiT(nn.Module):
         # Restore batch and time dimensions
         x = x.view(B, T, -1, H, W)           # (B, T, out_channels, H, W)
 
+
         return x
+
 
 def DiT_S_2():
     return DiT(
